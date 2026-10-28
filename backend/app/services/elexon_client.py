@@ -26,6 +26,11 @@ class ElexonClient:
         self.max_retries = max_retries or settings.max_retries
         self.backoff_factor = backoff_factor or settings.backoff_factor
 
+        # Health cache & lock to prevent thundering herd and slow synchronous health requests
+        self._cached_live_status: Optional[bool] = None
+        self._last_live_check: Optional[datetime] = None
+        self._cache_ttl_seconds: float = 60.0
+
     async def _fetch_with_retry(self, endpoint: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Execute HTTP GET with bounded retries and exponential backoff."""
         url = f"{self.base_url}{endpoint}"
@@ -33,7 +38,7 @@ class ElexonClient:
             "User-Agent": "Gridbricks-Wind-Analytics/1.0",
             "Accept": "application/json"
         }
-        
+
         last_error = None
         for attempt in range(1, self.max_retries + 1):
             try:
@@ -42,7 +47,7 @@ class ElexonClient:
                     resp = await client.get(url, params=params, headers=headers)
                     resp.raise_for_status()
                     data = resp.json()
-                    
+
                     if isinstance(data, list):
                         return data
                     elif isinstance(data, dict) and "data" in data:
@@ -74,13 +79,13 @@ class ElexonClient:
         """
         from_str = from_time.strftime("%Y-%m-%dT%H:%M:%SZ")
         to_str = to_time.strftime("%Y-%m-%dT%H:%M:%SZ")
-        
+
         endpoint = "/datasets/FUELHH/stream"
         params = {
             "publishDateTimeFrom": from_str,
             "publishDateTimeTo": to_str
         }
-        
+
         raw_records = await self._fetch_with_retry(endpoint, params)
         # Filter for national wind generation
         wind_records = [
@@ -101,13 +106,13 @@ class ElexonClient:
         """
         from_str = from_time.strftime("%Y-%m-%dT%H:%M:%SZ")
         to_str = to_time.strftime("%Y-%m-%dT%H:%M:%SZ")
-        
+
         endpoint = "/datasets/WINDFOR/stream"
         params = {
             "publishDateTimeFrom": from_str,
             "publishDateTimeTo": to_str
         }
-        
+
         raw_records = await self._fetch_with_retry(endpoint, params)
         valid_records = [
             r for r in raw_records
@@ -116,17 +121,37 @@ class ElexonClient:
         logger.info(f"Retrieved {len(valid_records)} WINDFOR forecast records for {from_str} to {to_str}")
         return valid_records
 
-    async def ping_health(self) -> bool:
-        """Check if Elexon API is reachable with a short lightweight query."""
+    async def ping_health(self, force: bool = False, timeout_seconds: float = 2.5) -> bool:
+        """
+        Check if upstream Elexon API is reachable with short, bounded connection timeouts.
+        Caches health status for 60 seconds to prevent blocking frequent liveness probes.
+        """
+        now = datetime.now(timezone.utc)
+        if not force and self._cached_live_status is not None and self._last_live_check is not None:
+            age = (now - self._last_live_check).total_seconds()
+            if age < self._cache_ttl_seconds:
+                return self._cached_live_status
+
         try:
-            # Query 1-hour interval for health ping
-            now = datetime.now(timezone.utc)
+            # Query 1-hour interval for health ping with strict bounded timeout
             from_t = (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
             to_t = (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
             url = f"{self.base_url}/datasets/FUELHH/stream"
-            async with httpx.AsyncClient(timeout=5.0) as client:
+
+            client_timeout = httpx.Timeout(
+                connect=min(2.0, timeout_seconds),
+                read=timeout_seconds,
+                write=2.0,
+                pool=2.0
+            )
+            async with httpx.AsyncClient(timeout=client_timeout) as client:
                 resp = await client.get(url, params={"publishDateTimeFrom": from_t, "publishDateTimeTo": to_t})
-                return resp.status_code == 200
+                is_live = (resp.status_code == 200)
+                self._cached_live_status = is_live
+                self._last_live_check = now
+                return is_live
         except Exception as e:
-            logger.warning(f"Elexon health ping failed: {e}")
+            logger.warning(f"Elexon health ping failed (non-blocking): {e}")
+            self._cached_live_status = False
+            self._last_live_check = now
             return False

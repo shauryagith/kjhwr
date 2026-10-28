@@ -64,6 +64,14 @@ export const DiurnalChart: React.FC<DiurnalChartProps> = ({ data, loading }) => 
     );
   }
 
+  if (!data || data.length === 0) {
+    return (
+      <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs flex flex-col justify-center items-center h-72 text-slate-400 text-xs">
+        <p className="font-medium text-slate-600">No diurnal data available</p>
+      </div>
+    );
+  }
+
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs">
       <div className="pb-3 border-b border-slate-100 mb-3">

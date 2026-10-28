@@ -82,6 +82,15 @@ export const ActualVsForecastChart: React.FC<ActualVsForecastChartProps> = ({ da
     );
   }
 
+  if (!data || data.length === 0) {
+    return (
+      <div className="bg-white rounded-xl border border-slate-200 p-8 shadow-xs mb-6 text-center text-slate-500 text-sm">
+        <p className="font-semibold text-slate-700">No timeseries data available</p>
+        <p className="text-xs text-slate-400 mt-1">Check the selected date range and filter criteria.</p>
+      </div>
+    );
+  }
+
   // Format tick labels
   const formatXAxis = (tickItem: string) => {
     try {
@@ -186,7 +195,7 @@ export const ActualVsForecastChart: React.FC<ActualVsForecastChartProps> = ({ da
               fill="#F8FAFC"
               tickFormatter={formatXAxis}
               startIndex={0}
-              endIndex={Math.min(data.length - 1, 168)} // Default to first week for readability
+              endIndex={Math.max(0, Math.min(data.length - 1, 168))} // Default to first week for readability
             />
           </ComposedChart>
         </ResponsiveContainer>

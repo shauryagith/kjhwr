@@ -42,6 +42,7 @@ htmlcov/
 node_modules/
 frontend/node_modules/
 frontend/dist/
+*.tsbuildinfo
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

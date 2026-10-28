@@ -83,7 +83,7 @@ export const App: React.FC = () => {
     setLoading(true);
     setErrorMessage(null);
     try {
-      const [sumRes, tsRes, dailyRes, diurnalRes, errRes] = await Promise.all([
+      const results = await Promise.allSettled([
         api.getSummary(filters),
         api.getTimeseries(filters),
         api.getDaily(filters),
@@ -91,14 +91,45 @@ export const App: React.FC = () => {
         api.getErrors(filters),
       ]);
 
-      setSummary(sumRes.summary);
-      setProcurement(sumRes.procurementImpact);
-      setTimeseries(tsRes);
-      setDaily(dailyRes);
-      setDiurnal(diurnalRes);
-      setErrors(errRes);
+      const [sumSettled, tsSettled, dailySettled, diurnalSettled, errSettled] = results;
+      const apiErrors: string[] = [];
+
+      if (sumSettled.status === 'fulfilled') {
+        setSummary(sumSettled.value.summary);
+        setProcurement(sumSettled.value.procurementImpact);
+      } else {
+        apiErrors.push(`Summary: ${sumSettled.reason?.message || sumSettled.reason}`);
+      }
+
+      if (tsSettled.status === 'fulfilled') {
+        setTimeseries(tsSettled.value);
+      } else {
+        apiErrors.push(`Timeseries: ${tsSettled.reason?.message || tsSettled.reason}`);
+      }
+
+      if (dailySettled.status === 'fulfilled') {
+        setDaily(dailySettled.value);
+      } else {
+        apiErrors.push(`Daily: ${dailySettled.reason?.message || dailySettled.reason}`);
+      }
+
+      if (diurnalSettled.status === 'fulfilled') {
+        setDiurnal(diurnalSettled.value);
+      } else {
+        apiErrors.push(`Diurnal: ${diurnalSettled.reason?.message || diurnalSettled.reason}`);
+      }
+
+      if (errSettled.status === 'fulfilled') {
+        setErrors(errSettled.value);
+      } else {
+        apiErrors.push(`Error Distribution: ${errSettled.reason?.message || errSettled.reason}`);
+      }
+
+      if (apiErrors.length > 0) {
+        setErrorMessage(apiErrors.join(' | '));
+      }
     } catch (err: any) {
-      console.error('Error fetching analytics:', err);
+      console.error('Unexpected error fetching analytics:', err);
       setErrorMessage(err.message || 'Failed to load analytics data from backend.');
     } finally {
       setLoading(false);

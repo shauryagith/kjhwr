@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Query, HTTPException, status
 from fastapi.responses import StreamingResponse
 from datetime import datetime, timezone, timedelta
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 import io
 import csv
 import pandas as pd
@@ -38,6 +38,15 @@ from app.core.logging import logger
 router = APIRouter(prefix="/api/v1", tags=["Wind Forecast Analytics"])
 elexon_client = ElexonClient()
 
+# In-memory query cache for matched intervals: (start_date, end_date, preset_str, custom_cutoff) -> DataFrame
+_matched_cache: Dict[Tuple[str, str, str, Optional[str]], pd.DataFrame] = {}
+
+
+def clear_matched_cache() -> None:
+    """Clear in-memory matched DataFrame cache."""
+    global _matched_cache
+    _matched_cache.clear()
+
 
 @router.get("/health", response_model=HealthResponse)
 async def get_health():
@@ -55,6 +64,16 @@ async def get_health():
             "forecasts": stats["forecastsCount"]
         }
     )
+
+
+@router.get("/health/live")
+async def get_health_live():
+    """Fast, lightweight liveness check for container orchestrators without external dependency checks."""
+    return {
+        "status": "ok",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "cache_ready": data_store.has_data()
+    }
 
 
 @router.get("/metadata", response_model=MetadataResponse)
@@ -92,7 +111,7 @@ def _get_matched_df(
     cutoff_preset: CutoffPreset | str,
     custom_cutoff: Optional[str] = None
 ) -> pd.DataFrame:
-    """Helper to validate dates and retrieve matched DataFrame."""
+    """Helper to validate dates and retrieve matched DataFrame with LRU in-memory caching."""
     try:
         s_dt = datetime.strptime(start_date, "%Y-%m-%d")
         e_dt = datetime.strptime(end_date, "%Y-%m-%d")
@@ -106,7 +125,7 @@ def _get_matched_df(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Dates must be in YYYY-MM-DD format."
         )
-        
+
     c_dt = None
     if custom_cutoff:
         try:
@@ -116,13 +135,27 @@ def _get_matched_df(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="custom_cutoff must be an ISO-8601 formatted datetime string."
             )
-            
-    return ingestion_service.match_intervals(
+
+    preset_key = cutoff_preset.value if isinstance(cutoff_preset, CutoffPreset) else str(cutoff_preset)
+    cache_key = (start_date, end_date, preset_key, custom_cutoff)
+    if cache_key in _matched_cache:
+        return _matched_cache[cache_key].copy()
+
+    matched_df = ingestion_service.match_intervals(
         start_date=start_date,
         end_date=end_date,
         cutoff_preset=cutoff_preset,
         custom_cutoff=c_dt
     )
+
+    # Store bounded cache entry
+    if len(_matched_cache) >= 64:
+        # Evict oldest entry
+        first_key = next(iter(_matched_cache))
+        del _matched_cache[first_key]
+    _matched_cache[cache_key] = matched_df
+
+    return matched_df.copy()
 
 
 @router.get("/analysis/summary", response_model=Dict[str, Any])
@@ -153,17 +186,18 @@ async def get_analysis_timeseries(
 ):
     """Retrieve actual vs forecast time-series points with errors and publication timestamps."""
     df_matched = _get_matched_df(start_date, end_date, cutoff_preset, custom_cutoff)
-    points = []
-    for _, row in df_matched.iterrows():
-        points.append(TimeseriesPoint(
-            timestamp=row["deliveryInterval"],
-            actualMW=row["actualMW"],
-            forecastMW=row["forecastMW"],
-            errorMW=row["errorMW"],
-            absErrorMW=row["absErrorMW"],
-            forecastPublishTime=row["forecastPublishTime"],
-            isOverforecast=bool(row["errorMW"] > 1.0) if row["errorMW"] is not None else None
-        ))
+    points = [
+        TimeseriesPoint(
+            timestamp=row.deliveryInterval,
+            actualMW=row.actualMW if pd.notna(row.actualMW) else None,
+            forecastMW=row.forecastMW if pd.notna(row.forecastMW) else None,
+            errorMW=row.errorMW if pd.notna(row.errorMW) else None,
+            absErrorMW=row.absErrorMW if pd.notna(row.absErrorMW) else None,
+            forecastPublishTime=row.forecastPublishTime if pd.notna(row.forecastPublishTime) else None,
+            isOverforecast=bool(row.errorMW > 1.0) if (pd.notna(row.errorMW) and row.errorMW is not None) else None
+        )
+        for row in df_matched.itertuples(index=False)
+    ]
     return points
 
 
@@ -217,35 +251,36 @@ async def get_forecast_table(
 ):
     """Paginated, sortable and filterable table of individual delivery intervals."""
     df_matched = _get_matched_df(start_date, end_date, cutoff_preset, custom_cutoff)
-    
+
     if status_filter:
         df_matched = df_matched[df_matched["status"] == status_filter]
-        
+
     ascending = (sort_dir == "asc")
     if sort_by in df_matched.columns:
         df_matched = df_matched.sort_values(by=sort_by, ascending=ascending)
-        
+
     total_count = len(df_matched)
     start_idx = (page - 1) * page_size
     end_idx = start_idx + page_size
     df_slice = df_matched.iloc[start_idx:end_idx]
-    
-    items = []
-    for _, row in df_slice.iterrows():
-        items.append(MatchedIntervalItem(
-            deliveryInterval=row["deliveryInterval"],
-            actualMW=row["actualMW"] if pd.notna(row["actualMW"]) else None,
-            forecastMW=row["forecastMW"] if pd.notna(row["forecastMW"]) else None,
-            forecastPublishTime=row["forecastPublishTime"] if pd.notna(row["forecastPublishTime"]) else None,
-            forecastAgeHours=row["forecastAgeHours"] if pd.notna(row["forecastAgeHours"]) else None,
-            leadTimeHours=row["leadTimeHours"] if pd.notna(row["leadTimeHours"]) else None,
-            errorMW=row["errorMW"] if pd.notna(row["errorMW"]) else None,
-            absErrorMW=row["absErrorMW"] if pd.notna(row["absErrorMW"]) else None,
-            pctError=row["pctError"] if pd.notna(row["pctError"]) else None,
-            status=str(row["status"]),
-            isEligible=bool(row["isEligible"])
-        ))
-        
+
+    items = [
+        MatchedIntervalItem(
+            deliveryInterval=row.deliveryInterval,
+            actualMW=row.actualMW if pd.notna(row.actualMW) else None,
+            forecastMW=row.forecastMW if pd.notna(row.forecastMW) else None,
+            forecastPublishTime=row.forecastPublishTime if pd.notna(row.forecastPublishTime) else None,
+            forecastAgeHours=row.forecastAgeHours if pd.notna(row.forecastAgeHours) else None,
+            leadTimeHours=row.leadTimeHours if pd.notna(row.leadTimeHours) else None,
+            errorMW=row.errorMW if pd.notna(row.errorMW) else None,
+            absErrorMW=row.absErrorMW if pd.notna(row.absErrorMW) else None,
+            pctError=row.pctError if pd.notna(row.pctError) else None,
+            status=str(row.status),
+            isEligible=bool(row.isEligible)
+        )
+        for row in df_slice.itertuples(index=False)
+    ]
+
     return ForecastTableResponse(
         total=total_count,
         page=page,
@@ -263,10 +298,10 @@ async def export_analysis_csv(
 ):
     """Export matched wind forecast and actual observations as a CSV file."""
     df_matched = _get_matched_df(start_date, end_date, cutoff_preset, custom_cutoff)
-    
+
     stream = io.StringIO()
     writer = csv.writer(stream)
-    
+
     # Headers
     writer.writerow([
         "Delivery Interval (UTC)",
@@ -280,21 +315,21 @@ async def export_analysis_csv(
         "Percentage Error (%)",
         "Interval Status"
     ])
-    
-    for _, row in df_matched.iterrows():
+
+    for row in df_matched.itertuples(index=False):
         writer.writerow([
-            row["deliveryInterval"].isoformat() if pd.notna(row["deliveryInterval"]) else "",
-            row["actualMW"] if pd.notna(row["actualMW"]) else "",
-            row["forecastMW"] if pd.notna(row["forecastMW"]) else "",
-            row["forecastPublishTime"].isoformat() if pd.notna(row["forecastPublishTime"]) else "",
-            row["forecastAgeHours"] if pd.notna(row["forecastAgeHours"]) else "",
-            row["leadTimeHours"] if pd.notna(row["leadTimeHours"]) else "",
-            row["errorMW"] if pd.notna(row["errorMW"]) else "",
-            row["absErrorMW"] if pd.notna(row["absErrorMW"]) else "",
-            row["pctError"] if pd.notna(row["pctError"]) else "",
-            row["status"]
+            row.deliveryInterval.isoformat() if pd.notna(row.deliveryInterval) else "",
+            row.actualMW if pd.notna(row.actualMW) else "",
+            row.forecastMW if pd.notna(row.forecastMW) else "",
+            row.forecastPublishTime.isoformat() if pd.notna(row.forecastPublishTime) else "",
+            row.forecastAgeHours if pd.notna(row.forecastAgeHours) else "",
+            row.leadTimeHours if pd.notna(row.leadTimeHours) else "",
+            row.errorMW if pd.notna(row.errorMW) else "",
+            row.absErrorMW if pd.notna(row.absErrorMW) else "",
+            row.pctError if pd.notna(row.pctError) else "",
+            row.status
         ])
-        
+
     stream.seek(0)
     filename = f"gridbricks_wind_analysis_{start_date}_{end_date}_{cutoff_preset.value}.csv"
     return StreamingResponse(
@@ -311,6 +346,7 @@ async def refresh_dataset(
 ):
     """Trigger manual re-ingestion of wind actuals and forecasts from Elexon BMRS."""
     try:
+        clear_matched_cache()
         act_count, fc_count = await ingestion_service.fetch_month_data(year=year, month=month, force_refresh=True)
         return {
             "status": "success",

@@ -25,6 +25,27 @@ def test_health_endpoint(mock_ping):
     assert "data_points_cached" in data
 
 
+@patch("app.api.routes.elexon_client.ping_health", new_callable=AsyncMock)
+def test_health_external_failure(mock_ping):
+    """External dependency failure does not break application liveness."""
+    mock_ping.return_value = False
+    resp = client.get("/api/v1/health")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "ok"
+    assert data["elexon_live_accessible"] is False
+
+
+def test_health_live_endpoint():
+    """Liveness check is instantaneous and lightweight."""
+    resp = client.get("/api/v1/health/live")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "ok"
+    assert "timestamp" in data
+    assert "cache_ready" in data
+
+
 def test_metadata_endpoint():
     resp = client.get("/api/v1/metadata")
     assert resp.status_code == 200

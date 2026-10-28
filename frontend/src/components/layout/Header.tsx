@@ -1,6 +1,7 @@
 import React from 'react';
 import { Wind, Database, BookOpen, ExternalLink } from 'lucide-react';
 import { HealthResponse } from '../../types';
+import { API_BASE } from '../../services/api';
 
 interface HeaderProps {
   health: HealthResponse | null;
@@ -8,6 +9,9 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ health, onOpenMethodology }) => {
+  const docsUrl = API_BASE.startsWith('http')
+    ? `${API_BASE.replace(/\/api\/v1\/?$/, '')}/docs`
+    : '/docs';
   return (
     <header className="bg-navy-900 border-b border-navy-800 text-white shadow-md sticky top-0 z-40">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -60,7 +64,7 @@ export const Header: React.FC<HeaderProps> = ({ health, onOpenMethodology }) => 
 
             {/* OpenAPI link */}
             <a
-              href="/docs"
+              href={docsUrl}
               target="_blank"
               rel="noreferrer"
               className="hidden sm:flex items-center space-x-1 px-2.5 py-1.5 rounded-md hover:bg-navy-800 text-xs text-slate-400 hover:text-slate-200 transition-colors"

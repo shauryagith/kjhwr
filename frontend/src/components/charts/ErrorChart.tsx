@@ -58,6 +58,14 @@ export const ErrorChart: React.FC<ErrorChartProps> = ({ data, loading }) => {
     );
   }
 
+  if (!data || data.length === 0) {
+    return (
+      <div className="bg-white rounded-xl border border-slate-200 p-8 shadow-xs mb-6 text-center text-slate-500 text-sm">
+        <p className="font-semibold text-slate-700">No error data available</p>
+      </div>
+    );
+  }
+
   const formatXAxis = (tickItem: string) => {
     try {
       const d = parseISO(tickItem);

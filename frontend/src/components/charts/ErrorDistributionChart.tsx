@@ -48,6 +48,14 @@ export const ErrorDistributionChart: React.FC<ErrorDistributionChartProps> = ({ 
     );
   }
 
+  if (!data || data.length === 0) {
+    return (
+      <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs flex flex-col justify-center items-center h-72 text-slate-400 text-xs">
+        <p className="font-medium text-slate-600">No error distribution data available</p>
+      </div>
+    );
+  }
+
   const getBarColor = (label: string) => {
     if (label.includes('Accurate')) return '#10B981'; // green
     if (label.includes('Over')) return '#F59E0B'; // amber

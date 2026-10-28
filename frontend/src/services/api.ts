@@ -11,7 +11,21 @@ import {
   CutoffPresetId,
 } from '../types';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api/v1';
+export const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/+$/, '');
+
+async function handleResponse<T>(res: Response, fallbackError: string): Promise<T> {
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const errJson = await res.json();
+      detail = errJson?.detail || errJson?.message || '';
+    } catch {
+      // Non-JSON response
+    }
+    throw new Error(detail ? `${fallbackError}: ${detail}` : `${fallbackError} (${res.status} ${res.statusText})`);
+  }
+  return res.json();
+}
 
 export interface QueryFilters {
   startDate: string;
@@ -23,14 +37,12 @@ export interface QueryFilters {
 export const api = {
   async getHealth(): Promise<HealthResponse> {
     const res = await fetch(`${API_BASE}/health`);
-    if (!res.ok) throw new Error(`Health check failed: ${res.statusText}`);
-    return res.json();
+    return handleResponse<HealthResponse>(res, 'Health check failed');
   },
 
   async getMetadata(): Promise<MetadataResponse> {
     const res = await fetch(`${API_BASE}/metadata`);
-    if (!res.ok) throw new Error(`Failed to load metadata: ${res.statusText}`);
-    return res.json();
+    return handleResponse<MetadataResponse>(res, 'Failed to load metadata');
   },
 
   async getSummary(filters: QueryFilters): Promise<{
@@ -49,8 +61,7 @@ export const api = {
       params.append('custom_cutoff', filters.customCutoff);
     }
     const res = await fetch(`${API_BASE}/analysis/summary?${params.toString()}`);
-    if (!res.ok) throw new Error(`Failed to fetch summary: ${res.statusText}`);
-    return res.json();
+    return handleResponse(res, 'Failed to fetch summary');
   },
 
   async getTimeseries(filters: QueryFilters): Promise<TimeseriesPoint[]> {
@@ -63,8 +74,7 @@ export const api = {
       params.append('custom_cutoff', filters.customCutoff);
     }
     const res = await fetch(`${API_BASE}/analysis/timeseries?${params.toString()}`);
-    if (!res.ok) throw new Error(`Failed to fetch timeseries: ${res.statusText}`);
-    return res.json();
+    return handleResponse<TimeseriesPoint[]>(res, 'Failed to fetch timeseries');
   },
 
   async getDaily(filters: QueryFilters): Promise<DailySummaryItem[]> {
@@ -77,8 +87,7 @@ export const api = {
       params.append('custom_cutoff', filters.customCutoff);
     }
     const res = await fetch(`${API_BASE}/analysis/daily?${params.toString()}`);
-    if (!res.ok) throw new Error(`Failed to fetch daily summary: ${res.statusText}`);
-    return res.json();
+    return handleResponse<DailySummaryItem[]>(res, 'Failed to fetch daily summary');
   },
 
   async getDiurnal(filters: QueryFilters): Promise<DiurnalAccuracyItem[]> {
@@ -91,8 +100,7 @@ export const api = {
       params.append('custom_cutoff', filters.customCutoff);
     }
     const res = await fetch(`${API_BASE}/analysis/diurnal?${params.toString()}`);
-    if (!res.ok) throw new Error(`Failed to fetch diurnal breakdown: ${res.statusText}`);
-    return res.json();
+    return handleResponse<DiurnalAccuracyItem[]>(res, 'Failed to fetch diurnal breakdown');
   },
 
   async getErrors(filters: QueryFilters): Promise<ErrorDistributionBucket[]> {
@@ -105,8 +113,7 @@ export const api = {
       params.append('custom_cutoff', filters.customCutoff);
     }
     const res = await fetch(`${API_BASE}/analysis/errors?${params.toString()}`);
-    if (!res.ok) throw new Error(`Failed to fetch error distribution: ${res.statusText}`);
-    return res.json();
+    return handleResponse<ErrorDistributionBucket[]>(res, 'Failed to fetch error distribution');
   },
 
   async getForecastTable(
@@ -133,8 +140,7 @@ export const api = {
       params.append('status_filter', statusFilter);
     }
     const res = await fetch(`${API_BASE}/analysis/forecast-table?${params.toString()}`);
-    if (!res.ok) throw new Error(`Failed to fetch forecast table: ${res.statusText}`);
-    return res.json();
+    return handleResponse<ForecastTableResponse>(res, 'Failed to fetch forecast table');
   },
 
   getExportCsvUrl(filters: QueryFilters): string {

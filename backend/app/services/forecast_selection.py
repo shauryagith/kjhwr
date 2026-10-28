@@ -93,9 +93,13 @@ def select_forecast_as_of(
             return None
             
         # Select latest eligible publication (break ties by highest index/generation)
-        latest_record = eligible.sort_values(by=['publishTime', 'generation'], ascending=[True, True]).iloc[-1]
+        if len(eligible) == 1:
+            latest_record = eligible.iloc[0]
+        else:
+            latest_record = eligible.sort_values(by=['publishTime', 'generation'], ascending=[True, True]).iloc[-1]
         
-        pub_time = ensure_utc(latest_record['publishTime'])
+        raw_pub = latest_record['publishTime']
+        pub_time = ensure_utc(raw_pub.to_pydatetime() if isinstance(raw_pub, pd.Timestamp) else raw_pub)
         gen_mw = float(latest_record['generation'])
         forecast_age_h = max(0.0, (cutoff_utc - pub_time).total_seconds() / 3600.0)
         lead_time_h = (delivery_utc - pub_time).total_seconds() / 3600.0
